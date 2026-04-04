@@ -57,8 +57,8 @@ export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('123456');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [me, setMe] = useState<MeResponse | null>(null);
 
   const [results, setResults] = useState<ResultItem[]>([]);
@@ -68,6 +68,7 @@ export default function AdminPage() {
   const [actionLoading, setActionLoading] = useState<
     'open' | 'close' | 'reset' | null
   >(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const [error, setError] = useState('');
   const [lastUpdate, setLastUpdate] = useState('');
 
@@ -92,8 +93,18 @@ export default function AdminPage() {
 
     try {
       const [resultsRes, statsRes, electionRes] = await Promise.all([
-        fetch(`${API}/votes/results`, { cache: 'no-store' }),
-        fetch(`${API}/votes/stats`, { cache: 'no-store' }),
+        fetch(`${API}/votes/results`, {
+          cache: 'no-store',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+        fetch(`${API}/votes/stats`, {
+          cache: 'no-store',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }),
         fetch(`${API}/election`, { cache: 'no-store' }),
       ]);
 
@@ -171,8 +182,53 @@ export default function AdminPage() {
     }
   };
 
-  const loadInitialAdminData = async () => {
-    await loadElectionData();
+  const loadInitialAdminData = async (jwt: string) => {
+    await Promise.all([
+      (async () => {
+        setLoading(true);
+        setError('');
+
+        try {
+          const [resultsRes, statsRes, electionRes] = await Promise.all([
+            fetch(`${API}/votes/results`, {
+              cache: 'no-store',
+              headers: {
+                Authorization: `Bearer ${jwt}`,
+              },
+            }),
+            fetch(`${API}/votes/stats`, {
+              cache: 'no-store',
+              headers: {
+                Authorization: `Bearer ${jwt}`,
+              },
+            }),
+            fetch(`${API}/election`, { cache: 'no-store' }),
+          ]);
+
+          if (!resultsRes.ok || !statsRes.ok || !electionRes.ok) {
+            throw new Error('No se pudieron obtener los datos de la elección');
+          }
+
+          const resultsData: ResultItem[] = await resultsRes.json();
+          const statsData: Stats = await statsRes.json();
+          const electionData: ElectionStatus = await electionRes.json();
+
+          setResults(resultsData);
+          setStats(statsData);
+          setElection(electionData);
+          setLastUpdate(new Date().toLocaleString('es-AR'));
+        } catch (err: unknown) {
+          if (err instanceof Error) {
+            setError(err.message);
+          } else {
+            setError('Ocurrió un error al cargar los datos');
+          }
+        } finally {
+          setLoading(false);
+        }
+      })(),
+    ]);
+
     setStudents([]);
     setHasSearchedStudents(false);
     setStudentsError('');
@@ -199,7 +255,7 @@ export default function AdminPage() {
       setToken(storedToken);
       setMe(data);
       setIsAuthenticated(true);
-      await loadInitialAdminData();
+      await loadInitialAdminData(storedToken);
     } catch {
       localStorage.removeItem('admin_token');
       setToken('');
@@ -268,7 +324,7 @@ export default function AdminPage() {
       setToken(data.access_token);
       setMe(data.user);
       setIsAuthenticated(true);
-      await loadInitialAdminData();
+      await loadInitialAdminData(data.access_token);
     } catch (err: unknown) {
       if (err instanceof Error) {
         setLoginError(err.message);
@@ -390,6 +446,49 @@ export default function AdminPage() {
       }
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const handleOpenActa = async () => {
+    setPdfLoading(true);
+    setError('');
+
+    try {
+      const res = await fetch(`${API}/votes/acta`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        let message = 'No se pudo generar el acta';
+
+        try {
+          const data = await res.json();
+          message = data.message || message;
+        } catch {
+          // sin acción
+        }
+
+        throw new Error(message);
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener,noreferrer');
+
+      setTimeout(() => {
+        window.URL.revokeObjectURL(url);
+      }, 10000);
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('Ocurrió un error al generar el acta');
+      }
+    } finally {
+      setPdfLoading(false);
     }
   };
 
@@ -525,7 +624,7 @@ export default function AdminPage() {
 
   const handleDeleteStudent = async (student: Student) => {
     const confirmed = window.confirm(
-      `¿Desea eliminar al alumno ${student.fullName}?`,
+      `¿Desea dar de baja al alumno ${student.fullName}?`,
     );
 
     if (!confirmed) return;
@@ -543,7 +642,7 @@ export default function AdminPage() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.message || 'No se pudo eliminar el alumno');
+        throw new Error(data.message || 'No se pudo dar de baja al alumno');
       }
 
       if (editingStudentId === student.id) {
@@ -562,7 +661,7 @@ export default function AdminPage() {
       if (err instanceof Error) {
         setStudentsError(err.message);
       } else {
-        setStudentsError('Ocurrió un error al eliminar el alumno');
+        setStudentsError('Ocurrió un error al dar de baja al alumno');
       }
     }
   };
@@ -1169,6 +1268,25 @@ export default function AdminPage() {
                   Actualizar resultados
                 </button>
 
+                {isClosed && (
+                  <button
+                    onClick={handleOpenActa}
+                    disabled={pdfLoading}
+                    style={{
+                      background: pdfLoading ? '#b0bec5' : '#3949ab',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '14px',
+                      padding: '15px 18px',
+                      fontSize: '1rem',
+                      fontWeight: 800,
+                      cursor: pdfLoading ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {pdfLoading ? 'Generando acta...' : 'Ver acta PDF'}
+                  </button>
+                )}
+
                 <button
                   onClick={handleOpenVoting}
                   disabled={!isClosed || actionLoading !== null}
@@ -1467,17 +1585,18 @@ export default function AdminPage() {
 
                           <button
                             onClick={() => handleDeleteStudent(student)}
+                            disabled={!student.enabled}
                             style={{
-                              background: '#c62828',
+                              background: !student.enabled ? '#b0bec5' : '#c62828',
                               color: '#fff',
                               border: 'none',
                               borderRadius: '12px',
                               padding: '10px 14px',
                               fontWeight: 800,
-                              cursor: 'pointer',
+                              cursor: !student.enabled ? 'not-allowed' : 'pointer',
                             }}
                           >
-                            Eliminar
+                            Dar de baja
                           </button>
                         </div>
                       </div>
